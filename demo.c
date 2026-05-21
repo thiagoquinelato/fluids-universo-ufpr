@@ -17,6 +17,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <GL/glut.h>
+#include <stdbool.h>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb/stb_image.h"
 
 /* macros */
 
@@ -36,6 +40,7 @@ static int dvel;
 
 static float * u, * v, * u_prev, * v_prev;
 static float * dens, * dens_prev;
+static float *dens_bloom, *ping, *pong;
 
 static int win_id;
 static int win_x, win_y;
@@ -58,6 +63,15 @@ static void free_data ( void )
 	if ( v_prev ) free ( v_prev );
 	if ( dens ) free ( dens );
 	if ( dens_prev ) free ( dens_prev );
+
+	if ( dens_bloom ) free ( dens_bloom );
+	if ( ping ) free ( ping );
+	if ( pong ) free ( pong );
+}
+
+float get_density_from_color(unsigned char r, unsigned char g, unsigned char b) {
+        if (r > 200 && g > 200 && b > 200) return 1.0f;
+        return 0.0f;
 }
 
 static void clear_data ( void )
@@ -67,6 +81,30 @@ static void clear_data ( void )
 	for ( i=0 ; i<size ; i++ ) {
 		u[i] = v[i] = u_prev[i] = v_prev[i] = dens[i] = dens_prev[i] = 0.0f;
 	}
+
+	// draw image into density map (recarrega imagem toda vez!!)
+        int w, h, n;
+        unsigned char *img = stbi_load("logo_matind.jpg", &w, &h, &n, 3);
+        if (img == NULL) {
+                printf("Failure reason: %s\n", stbi_failure_reason());
+                exit(1);
+        }
+
+        puts("oie");
+
+        int max_size = N + 1;
+        for (int i = 0; i < max_size; ++i) {
+                for (int j = 0; j < max_size; ++j) {
+			int img_i = (i * h) / max_size;
+                        int img_j = (j * w) / max_size;
+                        int img_idx = (img_i * w + img_j) * 3;
+
+                        dens[IX(j, max_size - i - 1)] = get_density_from_color(img[img_idx + 0], img[img_idx + 1], img[img_idx + 2]);
+                }
+        }
+
+        stbi_image_free(img);
+
 }
 
 static int allocate_data ( void )
@@ -77,8 +115,12 @@ static int allocate_data ( void )
 	v			= (float *) malloc ( size*sizeof(float) );
 	u_prev		= (float *) malloc ( size*sizeof(float) );
 	v_prev		= (float *) malloc ( size*sizeof(float) );
-	dens		= (float *) malloc ( size*sizeof(float) );	
+	dens		= (float *) malloc ( size*sizeof(float) );
 	dens_prev	= (float *) malloc ( size*sizeof(float) );
+
+	dens_bloom  = (float *) malloc ( size*sizeof(float) );	
+	ping  = (float *) malloc ( size*sizeof(float) );	
+	pong  = (float *) malloc ( size*sizeof(float) );
 
 	if ( !u || !v || !u_prev || !v_prev || !dens || !dens_prev ) {
 		fprintf ( stderr, "cannot allocate data\n" );
@@ -140,8 +182,74 @@ float lerp( float a, float b, float t )
 	return a + t*(b-a);
 }
 
+void set_color_from_density(float density) {
+	if (density > 1.0f) density = 1.0f;
+	glColor3f(lerp(0.68f, 1.0f, density), lerp(0.13f, 1.0f, density), lerp(0.14f, 1.0f, density));
+}
+
+
+
+
+int clamp(int v, int a, int b) {
+	return v < a ? a : (v > b ? b : v);
+}
+
+void blur_pass(float* src, float* dest, bool horizontal) {
+
+	float weight[] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
+
+	for (int i = 1; i <= N; ++i) {
+		for (int j = 1; j <= N; ++j) {
+			float result = src[IX(i, j)] * weight[0];
+			for (int k = 1; k < 5; ++k) {
+				if (horizontal) {
+					result += src[IX(clamp(i + k, 1, N), j)] * weight[k];
+					result += src[IX(clamp(i - k, 1, N), j)] * weight[k];
+				} else {
+					result += src[IX(i, clamp(j + k, 1, N))] * weight[k];
+					result += src[IX(i, clamp(j - k, 1, N))] * weight[k];
+				}
+			}
+
+			dest[IX(i, j)] = result;
+		}
+	}
+}
+
+void bloom(float threshold, int passes, float exposure, float gamma) {
+	for (int i = 1; i <= N; ++i) {
+		for (int j = 1; j <= N; ++j) {
+			ping[IX(i, j)] = dens[IX(i, j)] > threshold ? dens[IX(i, j)] : 0.0f;
+		}
+	}
+
+	for (int pass = 0; pass < passes; ++pass) {
+		bool horizontal = (pass & 1) == 0;
+		blur_pass(horizontal ? ping : pong, horizontal ? pong : ping, horizontal);
+	}
+
+	for (int i = 1; i <= N; ++i) {
+		for (int j = 1; j <= N; ++j) {
+			if ((passes & 1) == 0) {
+				dens_bloom[IX(i, j)] = dens[IX(i, j)] + ping[IX(i, j)];
+			} else {
+				dens_bloom[IX(i, j)] = dens[IX(i, j)] + pong[IX(i, j)];
+			}
+
+			dens_bloom[IX(i, j)] = powf(1.0f - expf(-dens_bloom[IX(i, j)] * exposure), 1.0f / gamma);
+		}
+	}
+}
+
+
+
+
+
 static void draw_density ( void )
 {
+
+	bloom(0.9f, 10, 1.2f, 1.3f);
+
 	int i, j;
 	float x, y, h, d00, d01, d10, d11;
 
@@ -154,20 +262,18 @@ static void draw_density ( void )
 			for ( j=0 ; j<=N ; j++ ) {
 				y = (j-0.5f)*h;
 
-				d00 = dens[IX(i,j)];
-				d01 = dens[IX(i,j+1)];
-				d10 = dens[IX(i+1,j)];
-				d11 = dens[IX(i+1,j+1)];
+				d00 = dens_bloom[IX(i,j)];
+				d01 = dens_bloom[IX(i,j+1)];
+				d10 = dens_bloom[IX(i+1,j)];
+				d11 = dens_bloom[IX(i+1,j+1)];
 
-				if (d00 > 1.0f) d00 = 1.0f;
-				if (d01 > 1.0f) d01 = 1.0f;
-				if (d10 > 1.0f) d10 = 1.0f;
-				if (d11 > 1.0f) d11 = 1.0f;
+				// bilinear filtering
+				// d00 = d01 = d10 = d11 = lerp(lerp(d00, d01, 0.5f), lerp(d10, d11, 0.5f), 0.5f);
 
-				glColor3f ( lerp(1.0f, 0.68f, d00), lerp(1.0f, 0.13f, d00), lerp(1.0f, 0.14f, d00) ); glVertex2f ( x, y );
-				glColor3f ( lerp(1.0f, 0.68f, d10), lerp(1.0f, 0.13f, d10), lerp(1.0f, 0.14f, d10) ); glVertex2f ( x+h, y );
-				glColor3f ( lerp(1.0f, 0.68f, d11), lerp(1.0f, 0.13f, d11), lerp(1.0f, 0.14f, d11) ); glVertex2f ( x+h, y+h );
-				glColor3f ( lerp(1.0f, 0.68f, d01), lerp(1.0f, 0.13f, d01), lerp(1.0f, 0.14f, d01) ); glVertex2f ( x, y+h );
+				set_color_from_density(d00); glVertex2f ( x, y );
+				set_color_from_density(d10); glVertex2f ( x+h, y );
+				set_color_from_density(d11); glVertex2f ( x+h, y+h );
+				set_color_from_density(d01); glVertex2f ( x, y+h );
 			}
 		}
 
@@ -364,6 +470,7 @@ int main ( int argc, char ** argv )
 
 	if ( !allocate_data () ) exit ( 1 );
 	clear_data ();
+
 
 	win_x = 512;
 	win_y = 512;
