@@ -83,28 +83,25 @@ static void clear_data ( void )
 	}
 
 	// draw image into density map (recarrega imagem toda vez!!)
-        int w, h, n;
-        unsigned char *img = stbi_load("logo_matind.jpg", &w, &h, &n, 3);
-        if (img == NULL) {
-                printf("Failure reason: %s\n", stbi_failure_reason());
-                exit(1);
-        }
+	int w, h, n;
+	unsigned char *img = stbi_load("logo_matind.jpg", &w, &h, &n, 3);
+	if (img == NULL) {
+		printf("Failure reason: %s\n", stbi_failure_reason());
+		exit(1);
+	}
 
-        puts("oie");
-
-        int max_size = N + 1;
-        for (int i = 0; i < max_size; ++i) {
-                for (int j = 0; j < max_size; ++j) {
+	int max_size = N + 2;
+	for (int i = 1; i < max_size-1; ++i) {
+		for (int j = 1; j < max_size-1; ++j) {
 			int img_i = (i * h) / max_size;
-                        int img_j = (j * w) / max_size;
-                        int img_idx = (img_i * w + img_j) * 3;
+			int img_j = (j * w) / max_size;
+			int img_idx = (img_i * w + img_j) * 3;
 
-                        dens[IX(j, max_size - i - 1)] = get_density_from_color(img[img_idx + 0], img[img_idx + 1], img[img_idx + 2]);
-                }
-        }
+			dens[IX(j, max_size - i - 1)] = get_density_from_color(img[img_idx + 0], img[img_idx + 1], img[img_idx + 2]);
+		}
+	}
 
-        stbi_image_free(img);
-
+	stbi_image_free(img);
 }
 
 static int allocate_data ( void )
@@ -122,7 +119,7 @@ static int allocate_data ( void )
 	ping  = (float *) malloc ( size*sizeof(float) );	
 	pong  = (float *) malloc ( size*sizeof(float) );
 
-	if ( !u || !v || !u_prev || !v_prev || !dens || !dens_prev ) {
+	if ( !u || !v || !u_prev || !v_prev || !dens || !dens_prev || !dens_bloom || !ping || !pong ) {
 		fprintf ( stderr, "cannot allocate data\n" );
 		return ( 0 );
 	}
