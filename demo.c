@@ -29,7 +29,7 @@
 /* external definitions (from solver.c) */
 
 extern void dens_step ( int N, float * x, float * x0, float * u, float * v, float diff, float dt );
-extern void vel_step ( int N, float * u, float * v, float * u0, float * v0, float visc, float dt );
+extern void vel_step ( int N, float * u, float * v, float * u0, float * v0, float visc, float dt, float*, float*, float* );
 
 /* global variables */
 
@@ -41,6 +41,7 @@ static int dvel;
 static float * u, * v, * u_prev, * v_prev;
 static float * dens, * dens_prev;
 static float *dens_bloom, *ping, *pong;
+static float *walls, *walls_norm_u, *walls_norm_v;
 
 static int win_id;
 static int win_x, win_y;
@@ -67,6 +68,9 @@ static void free_data ( void )
 	if ( dens_bloom ) free ( dens_bloom );
 	if ( ping ) free ( ping );
 	if ( pong ) free ( pong );
+	if ( walls ) free ( walls );
+	if (walls_norm_u) free(walls_norm_u);
+	if (walls_norm_v) free(walls_norm_v);
 }
 
 float get_density_from_color(unsigned char r, unsigned char g, unsigned char b) {
@@ -79,7 +83,7 @@ static void clear_data ( void )
 	int i, size=(N+2)*(N+2);
 
 	for ( i=0 ; i<size ; i++ ) {
-		u[i] = v[i] = u_prev[i] = v_prev[i] = dens[i] = dens_prev[i] = 0.0f;
+		u[i] = v[i] = u_prev[i] = v_prev[i] = dens[i] = dens_prev[i] = dens_bloom[i] = ping[i] = pong[i] = walls[i] = walls_norm_u[i] = walls_norm_v[i] = 0.0f;
 	}
 
 	// draw image into density map (recarrega imagem toda vez!!)
@@ -97,11 +101,43 @@ static void clear_data ( void )
 			int img_j = (j * w) / max_size;
 			int img_idx = (img_i * w + img_j) * 3;
 
-			dens[IX(j, max_size - i - 1)] = get_density_from_color(img[img_idx + 0], img[img_idx + 1], img[img_idx + 2]);
+			// dens[IX(j, max_size - i - 1)] = get_density_from_color(img[img_idx + 0], img[img_idx + 1], img[img_idx + 2]);
+			walls[IX(j, max_size - i - 1)] = get_density_from_color(img[img_idx + 0], img[img_idx + 1], img[img_idx + 2]);
 		}
 	}
 
 	stbi_image_free(img);
+
+	// parede diagonal no canto inferior-esquerdo
+	for (int i = 0; i < 50; ++i) {
+		walls[IX(0 + i, 50 - i)] = 1.0f;
+	}
+	
+	const float SQRT1_2 = 0.7071067811865476f;
+
+	for (int i = 1; i <= N; ++i) {
+		for (int j = 1; j <= N; ++j) {
+			// normais: 
+			//   (SQRT1_2, -SQRT1_2) | (0, -1) | (-SQRT1_2, -SQRT1_2)
+			//   ----------------------------------------------------
+			//         (1,0)         | (0, 0)  |       (-1, 0)       
+			//   ----------------------------------------------------
+			//   (SQRT1_2, SQRT1_2)  | (0, 1)  | (-SQRT1_2, SQRT1_2) 
+			
+			walls_norm_u[IX(i, j)] += SQRT1_2 * walls[IX(i - 1, j + 1)] + 0.0f * walls[IX(i, j + 1)] - SQRT1_2 * walls[IX(i + 1, j + 1)];
+			walls_norm_u[IX(i, j)] += 1.0f    * walls[IX(i - 1, j)]     + 0.0f * walls[IX(i, j)]     - 1.0f    * walls[IX(i + 1, j)];
+			walls_norm_u[IX(i, j)] += SQRT1_2 * walls[IX(i - 1, j - 1)] + 0.0f * walls[IX(i, j - 1)] - SQRT1_2 * walls[IX(i + 1, j - 1)];
+			
+			walls_norm_v[IX(i, j)] += -SQRT1_2 * walls[IX(i - 1, j + 1)] - 1.0f * walls[IX(i, j + 1)] - SQRT1_2 * walls[IX(i + 1, j + 1)];
+			walls_norm_v[IX(i, j)] += 0.0f     * walls[IX(i - 1, j)]     + 0.0f * walls[IX(i, j)]     - 0.0f    * walls[IX(i + 1, j)];
+			walls_norm_v[IX(i, j)] += SQRT1_2  * walls[IX(i - 1, j - 1)] + 1.0f * walls[IX(i, j - 1)] + SQRT1_2 * walls[IX(i + 1, j - 1)];
+			
+			float norm = sqrtf(walls_norm_u[IX(i, j)] * walls_norm_u[IX(i, j)] + walls_norm_v[IX(i, j)] * walls_norm_v[IX(i, j)]);
+			if (norm < 1e-3) continue;
+			walls_norm_u[IX(i, j)] /= norm;
+			walls_norm_v[IX(i, j)] /= norm;
+		}
+	}
 }
 
 static int allocate_data ( void )
@@ -115,11 +151,14 @@ static int allocate_data ( void )
 	dens		= (float *) malloc ( size*sizeof(float) );
 	dens_prev	= (float *) malloc ( size*sizeof(float) );
 
-	dens_bloom  = (float *) malloc ( size*sizeof(float) );	
-	ping  = (float *) malloc ( size*sizeof(float) );	
+	dens_bloom  = (float *) malloc ( size*sizeof(float) );
+	ping  = (float *) malloc ( size*sizeof(float) );
 	pong  = (float *) malloc ( size*sizeof(float) );
+	walls = (float *) malloc ( size*sizeof(float) );
+	walls_norm_u = (float*) malloc(size * sizeof(float));
+	walls_norm_v = (float*) malloc(size * sizeof(float));
 
-	if ( !u || !v || !u_prev || !v_prev || !dens || !dens_prev || !dens_bloom || !ping || !pong ) {
+	if ( !u || !v || !u_prev || !v_prev || !dens || !dens_prev || !dens_bloom || !ping || !pong || !walls || !walls_norm_u || !walls_norm_v ) {
 		fprintf ( stderr, "cannot allocate data\n" );
 		return ( 0 );
 	}
@@ -167,7 +206,8 @@ static void draw_velocity ( void )
 				y = (j-0.5f)*h;
 
 				glVertex2f ( x, y );
-				glVertex2f ( x+u[IX(i,j)], y+v[IX(i,j)] );
+				// glVertex2f ( x+u[IX(i,j)], y+v[IX(i,j)] );
+				glVertex2f ( x+walls_norm_u[IX(i,j)] * 0.03f, y+walls_norm_v[IX(i,j)] * 0.03f );
 			}
 		}
 
@@ -179,7 +219,11 @@ float lerp( float a, float b, float t )
 	return a + t*(b-a);
 }
 
-void set_color_from_density(float density) {
+void set_color_from_density(float density, float wall) {
+	if (wall == 1.0f) {
+		glColor3f(0.0f, 0.0f, 0.0f);
+		return;
+	}
 	if (density > 1.0f) density = 1.0f;
 	glColor3f(lerp(0.68f, 1.0f, density), lerp(0.13f, 1.0f, density), lerp(0.14f, 1.0f, density));
 }
@@ -197,14 +241,21 @@ void blur_pass(float* src, float* dest, bool horizontal) {
 
 	for (int i = 1; i <= N; ++i) {
 		for (int j = 1; j <= N; ++j) {
+			
 			float result = src[IX(i, j)] * weight[0];
+			float mult1 = 1.0f, mult2 = 1.0f;
+			
 			for (int k = 1; k < 5; ++k) {
 				if (horizontal) {
-					result += src[IX(clamp(i + k, 1, N), j)] * weight[k];
-					result += src[IX(clamp(i - k, 1, N), j)] * weight[k];
+					if (walls[IX(clamp(i + k, 1, N), j)] == 1.0f) mult1 = 0.0f;
+					if (walls[IX(clamp(i - k, 1, N), j)] == 1.0f) mult2 = 0.0f;
+					result += src[IX(clamp(i + k, 1, N), j)] * weight[k] * mult1;
+					result += src[IX(clamp(i - k, 1, N), j)] * weight[k] * mult2;
 				} else {
-					result += src[IX(i, clamp(j + k, 1, N))] * weight[k];
-					result += src[IX(i, clamp(j - k, 1, N))] * weight[k];
+					if (walls[IX(i, clamp(j + k, 1, N))] == 1.0f) mult1 = 0.0f;
+					if (walls[IX(i, clamp(j - k, 1, N))] == 1.0f) mult2 = 0.0f;
+					result += src[IX(i, clamp(j + k, 1, N))] * weight[k] * mult1;
+					result += src[IX(i, clamp(j - k, 1, N))] * weight[k] * mult2;
 				}
 			}
 
@@ -267,10 +318,10 @@ static void draw_density ( void )
 				// bilinear filtering
 				// d00 = d01 = d10 = d11 = lerp(lerp(d00, d01, 0.5f), lerp(d10, d11, 0.5f), 0.5f);
 
-				set_color_from_density(d00); glVertex2f ( x, y );
-				set_color_from_density(d10); glVertex2f ( x+h, y );
-				set_color_from_density(d11); glVertex2f ( x+h, y+h );
-				set_color_from_density(d01); glVertex2f ( x, y+h );
+				set_color_from_density(d00, walls[IX(i, j)]); glVertex2f ( x, y );
+				set_color_from_density(d10, walls[IX(i + 1, j)]); glVertex2f ( x+h, y );
+				set_color_from_density(d11, walls[IX(i + 1, j + 1)]); glVertex2f ( x+h, y+h );
+				set_color_from_density(d01, walls[IX(i, j + 1)]); glVertex2f ( x, y+h );
 			}
 		}
 
@@ -367,7 +418,7 @@ static void reshape_func ( int width, int height )
 static void idle_func ( void )
 {
 	get_from_UI ( dens_prev, u_prev, v_prev );
-	vel_step ( N, u, v, u_prev, v_prev, visc, dt );
+	vel_step ( N, u, v, u_prev, v_prev, visc, dt, walls_norm_u, walls_norm_v, walls );
 	dens_step ( N, dens, dens_prev, u, v, diff, dt );
 
 	glutSetWindow ( win_id );

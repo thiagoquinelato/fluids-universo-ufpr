@@ -25,6 +25,25 @@ void set_bnd ( int N, int b, float * x )
 	x[IX(N+1,N+1)] = 0.5f*(x[IX(N,N+1)]+x[IX(N+1,N)]);
 }
 
+
+void set_bnd_walls(int N, float* u, float* v, float* walls_norm_u, float* walls_norm_v, float* walls) {
+	for (int i = 1; i <= N; ++i) {
+		for (int j = 1; j <= N; ++j) {
+			float norm_u = walls_norm_u[IX(i, j)];
+			float norm_v = walls_norm_v[IX(i, j)];
+			
+			float dot = u[IX(i, j)] * norm_u + v[IX(i, j)] * norm_v;
+			
+			u[IX(i, j)] -= 2.0f * dot * norm_u;
+			v[IX(i, j)] -= 2.0f * dot * norm_v;
+			
+			u[IX(i, j)] *= 1.0f - walls[IX(i, j)];
+			v[IX(i, j)] *= 1.0f - walls[IX(i, j)];
+		}
+	}
+}
+
+
 void lin_solve ( int N, int b, float * x, float * x0, float a, float c )
 {
 	int i, j, k;
@@ -60,7 +79,7 @@ void advect ( int N, int b, float * d, float * d0, float * u, float * v, float d
 	set_bnd ( N, b, d );
 }
 
-void project ( int N, float * u, float * v, float * p, float * div )
+void project ( int N, float * u, float * v, float * p, float * div, float* walls_norm_u, float* walls_norm_v, float* walls )
 {
 	int i, j;
 
@@ -77,6 +96,7 @@ void project ( int N, float * u, float * v, float * p, float * div )
 		v[IX(i,j)] -= 0.5f*N*(p[IX(i,j+1)]-p[IX(i,j-1)]);
 	END_FOR
 	set_bnd ( N, 1, u ); set_bnd ( N, 2, v );
+	set_bnd_walls(N, u, v, walls_norm_u, walls_norm_v, walls);
 }
 
 void dens_step ( int N, float * x, float * x0, float * u, float * v, float diff, float dt )
@@ -86,14 +106,14 @@ void dens_step ( int N, float * x, float * x0, float * u, float * v, float diff,
 	SWAP ( x0, x ); advect ( N, 0, x, x0, u, v, dt );
 }
 
-void vel_step ( int N, float * u, float * v, float * u0, float * v0, float visc, float dt )
+void vel_step ( int N, float * u, float * v, float * u0, float * v0, float visc, float dt, float* walls_norm_u, float* walls_norm_v, float* walls )
 {
 	add_source ( N, u, u0, dt ); add_source ( N, v, v0, dt );
 	SWAP ( u0, u ); diffuse ( N, 1, u, u0, visc, dt );
 	SWAP ( v0, v ); diffuse ( N, 2, v, v0, visc, dt );
-	project ( N, u, v, u0, v0 );
+	project ( N, u, v, u0, v0, walls_norm_u, walls_norm_v, walls );
 	SWAP ( u0, u ); SWAP ( v0, v );
 	advect ( N, 1, u, u0, u0, v0, dt ); advect ( N, 2, v, v0, u0, v0, dt );
-	project ( N, u, v, u0, v0 );
+	project ( N, u, v, u0, v0, walls_norm_u, walls_norm_v, walls );
 }
 
